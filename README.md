@@ -88,14 +88,13 @@ make docker-shim
 # Coordinator 시작
 cli-sidecar coordinator
 
-# Claude 컨테이너 생성 (user1 계정)
+# Claude 컨테이너 생성 (user1 계정, 대화형 모드로 상주)
 curl -X POST http://localhost:8830/api/containers \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "claude",
     "account": "user1",
     "cli_command": "claude",
-    "cli_args": "-i",
     "output_mode": "markdown"
   }'
 
@@ -188,14 +187,13 @@ data: complete
 ### Coordinator API (coordinator 모드 전용)
 
 #### `POST /api/containers`
-새 컨테이너 생성
+새 컨테이너 생성 (대화형 모드로 CLI 상주)
 
 ```json
 {
   "tool": "claude",
   "account": "user1",
   "cli_command": "claude",
-  "cli_args": "-i",
   "output_mode": "markdown",
   "env": {"ANTHROPIC_API_KEY": "sk-..."}
 }
@@ -265,6 +263,9 @@ Shim 헬스 체크
 
 `network`와 `shim_image`는 coordinator 모드에서만 사용됩니다.
 
+> **참고:** 위 `tools` 설정은 standalone 모드용입니다 (비대화형 `-p` 플래그 사용).
+> Coordinator 모드에서는 컨테이너 생성 시 API로 대화형 명령을 지정합니다 (예: `"cli_command": "claude"`, args 없음).
+
 ### 출력 모드 (Output Mode)
 
 CLI 도구의 출력을 처리하는 4가지 모드:
@@ -304,11 +305,24 @@ PTY 모드에서는 `output_mode: "markdown"`과 함께 사용하면 ANSI 출력
 
 ## 기본 도구별 CLI 명령
 
+### Standalone 모드 (비대화형, 1회 실행)
+
 | 도구 | 실행 명령 | 비고 |
 |------|-----------|------|
 | Claude | `claude -p "prompt"` | 비대화형 모드, stdout 출력 |
 | Codex | `codex exec "prompt"` | 비대화형, stderr에 진행 상황, stdout에 최종 결과 |
 | Gemini | `gemini -p "prompt"` | 비대화형 모드, stdout 출력 |
+
+### Coordinator 모드 (대화형, 상주 실행)
+
+| 도구 | 실행 명령 | 비고 |
+|------|-----------|------|
+| Claude | `claude` | 대화형 REPL, PTY에서 상주 |
+| Codex | `codex` | 대화형 모드, PTY에서 상주 |
+| Gemini | `gemini` | 대화형 모드, PTY에서 상주 |
+
+Coordinator 모드에서는 CLI를 매번 재실행하지 않고 PTY에서 대화형으로 띄워놓습니다.
+Shim이 프롬프트를 stdin으로 전달하고 stdout에서 응답을 캡처합니다.
 
 ## 환경 변수
 
