@@ -123,6 +123,7 @@ func (a *GenericAdapter) executePTY(ctx context.Context, prompt string) (*Respon
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
+		<-done // Wait for goroutine to finish writing before reading buffer
 		return &Response{
 			Output: a.processOutput(output.String()),
 			Error:  "cancelled",
@@ -224,6 +225,9 @@ func (a *GenericAdapter) streamPTY(ctx context.Context, prompt string) (<-chan S
 		defer close(ch)
 		defer ptmx.Close()
 
+		// Collect all raw output, then process at the end to avoid
+		// splitting ANSI escape sequences across chunk boundaries.
+		var rawBuf strings.Builder
 		buf := make([]byte, 4096)
 		for {
 			select {
@@ -231,17 +235,27 @@ func (a *GenericAdapter) streamPTY(ctx context.Context, prompt string) (<-chan S
 				if cmd.Process != nil {
 					cmd.Process.Kill()
 				}
+				if rawBuf.Len() > 0 {
+					ch <- StreamChunk{Text: a.processOutput(rawBuf.String())}
+				}
 				ch <- StreamChunk{Error: "cancelled", Done: true}
 				return
 			default:
 				n, err := ptmx.Read(buf)
 				if n > 0 {
-					text := a.processOutput(string(buf[:n]))
-					ch <- StreamChunk{Text: text}
+					chunk := string(buf[:n])
+					rawBuf.WriteString(chunk)
+					// Stream raw chunks immediately for responsiveness
+					ch <- StreamChunk{Text: chunk}
 				}
 				if err != nil {
-					// PTY read error on process exit is normal
+					// PTY read error on process exit is normal.
+					// Send a final processed chunk with the complete output.
 					_ = cmd.Wait()
+					if rawBuf.Len() > 0 {
+						processed := a.processOutput(rawBuf.String())
+						ch <- StreamChunk{Text: processed, Final: true}
+					}
 					ch <- StreamChunk{Done: true}
 					return
 				}
