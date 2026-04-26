@@ -142,7 +142,12 @@ func (m *Manager) Stream(tool, prompt string) (string, <-chan adapter.StreamChun
 		for chunk := range ch {
 			outCh <- chunk
 			if chunk.Text != "" {
-				fullOutput += chunk.Text
+				if chunk.Final {
+					// Final chunk contains fully processed output; replace accumulated raw data
+					fullOutput = chunk.Text
+				} else {
+					fullOutput += chunk.Text
+				}
 			}
 			if chunk.Done {
 				m.mu.Lock()
