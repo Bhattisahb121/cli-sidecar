@@ -502,3 +502,56 @@ func HandleSessionsFunc(sessionMgr *session.Manager) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, sessions)
 	}
 }
+
+// HandleSessionByIDFunc returns a handler for individual session operations.
+func HandleSessionByIDFunc(sessionMgr *session.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		parts := strings.SplitN(path, "/", 2)
+		sessionID := parts[0]
+
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "session ID required")
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			sess, err := sessionMgr.Get(sessionID)
+			if err != nil {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, sess)
+
+		case http.MethodDelete:
+			if len(parts) > 1 && parts[1] == "cancel" {
+				if err := sessionMgr.Cancel(sessionID); err != nil {
+					writeError(w, http.StatusNotFound, err.Error())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+				return
+			}
+			if err := sessionMgr.Delete(sessionID); err != nil {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+
+		case http.MethodPost:
+			if len(parts) > 1 && parts[1] == "cancel" {
+				if err := sessionMgr.Cancel(sessionID); err != nil {
+					writeError(w, http.StatusNotFound, err.Error())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+				return
+			}
+			writeError(w, http.StatusBadRequest, "unknown action")
+
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}

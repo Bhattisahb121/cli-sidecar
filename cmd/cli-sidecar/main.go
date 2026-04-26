@@ -132,10 +132,12 @@ func runCoordinator() {
 		runHandler := server.HandleRunFunc(sessionMgr)
 		streamHandler := server.HandleStreamFunc(sessionMgr)
 		sessionsHandler := server.HandleSessionsFunc(sessionMgr)
+		sessionByIDHandler := server.HandleSessionByIDFunc(sessionMgr)
 		mux.HandleFunc("/api/tools", toolsHandler)
 		mux.HandleFunc("/api/run", runHandler)
 		mux.HandleFunc("/api/stream", streamHandler)
 		mux.HandleFunc("/api/sessions", sessionsHandler)
+		mux.HandleFunc("/api/sessions/", sessionByIDHandler)
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

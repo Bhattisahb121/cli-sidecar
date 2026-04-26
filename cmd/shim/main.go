@@ -70,7 +70,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/prompt", proc.handlePrompt)
-	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/health", proc.handleHealth)
 	mux.HandleFunc("/info", proc.handleInfo)
 
 	srv := &http.Server{
@@ -121,15 +121,16 @@ func (p *CLIProcess) Start(command, args string) error {
 	}
 
 	p.ptmx = ptmx
-	p.ready = true
 
 	// Drain initial output (welcome message, prompt, etc.)
-	// Run in a goroutine with mutex to avoid racing with SendPrompt.
+	// Mark ready only after drain completes so /health reflects true readiness.
 	go func() {
 		time.Sleep(2 * time.Second)
 		p.mu.Lock()
 		p.drainOutput(3 * time.Second)
+		p.ready = true
 		p.mu.Unlock()
+		log.Printf("Shim ready: initial output drained")
 	}()
 
 	log.Printf("CLI process started: %s %s (PID: %d)", command, args, p.cmd.Process.Pid)
@@ -341,7 +342,16 @@ func (p *CLIProcess) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, promptResponse{Output: output})
 }
 
-func handleHealth(w http.ResponseWriter, r *http.Request) {
+func (p *CLIProcess) handleHealth(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	ready := p.ready
+	p.mu.Unlock()
+
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "initializing"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

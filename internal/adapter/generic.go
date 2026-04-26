@@ -249,9 +249,16 @@ func (a *GenericAdapter) streamPTY(ctx context.Context, prompt string) (<-chan S
 					ch <- StreamChunk{Text: chunk}
 				}
 				if err != nil {
-					// PTY read error on process exit is normal.
-					// Send a final processed chunk with the complete output.
 					_ = cmd.Wait()
+					// Check if this was a context cancellation
+					if ctx.Err() != nil {
+						if rawBuf.Len() > 0 {
+							ch <- StreamChunk{Text: a.processOutput(rawBuf.String())}
+						}
+						ch <- StreamChunk{Error: "cancelled", Done: true}
+						return
+					}
+					// Normal process exit — send final processed output.
 					if rawBuf.Len() > 0 {
 						processed := a.processOutput(rawBuf.String())
 						ch <- StreamChunk{Text: processed, Final: true}
