@@ -19,4 +19,4 @@ Thumbs.db
 
 # Config (may contain paths)
 config.json
-shim
+/shim

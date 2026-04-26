@@ -124,9 +124,12 @@ func (p *CLIProcess) Start(command, args string) error {
 	p.ready = true
 
 	// Drain initial output (welcome message, prompt, etc.)
+	// Run in a goroutine with mutex to avoid racing with SendPrompt.
 	go func() {
 		time.Sleep(2 * time.Second)
+		p.mu.Lock()
 		p.drainOutput(3 * time.Second)
+		p.mu.Unlock()
 	}()
 
 	log.Printf("CLI process started: %s %s (PID: %d)", command, args, p.cmd.Process.Pid)
@@ -326,6 +329,8 @@ func (p *CLIProcess) handlePrompt(w http.ResponseWriter, r *http.Request) {
 			output = ansi.ToPlainText(output)
 		case config.OutputMarkdown:
 			output = ansi.ToMarkdown(output)
+		case config.OutputRaw, config.OutputDumb:
+			// Return as-is for raw/dumb modes
 		default:
 			output = p.processOutput(output)
 		}

@@ -83,8 +83,8 @@ func (m *Manager) Create(cfg Config) (*Info, error) {
 
 	name := fmt.Sprintf("%s-%s-%03d", cfg.Tool, cfg.Account, seq)
 
-	// Find available port for shim
-	shimPort := 8831 + seq
+	// Shim always listens on port 8831 inside the container
+	shimPort := 8831
 
 	info := &Info{
 		Name:      name,
@@ -141,7 +141,11 @@ func (m *Manager) Create(cfg Config) (*Info, error) {
 	containerID := strings.TrimSpace(stdout.String())
 
 	m.mu.Lock()
-	info.ID = containerID[:12]
+	if len(containerID) >= 12 {
+		info.ID = containerID[:12]
+	} else {
+		info.ID = containerID
+	}
 	info.Status = "running"
 	// In Docker network, containers can reach each other by name
 	info.ShimAddr = fmt.Sprintf("http://%s:%d", name, 8831)
