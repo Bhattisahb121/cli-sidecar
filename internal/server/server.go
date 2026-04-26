@@ -47,7 +47,7 @@ func New(registry *adapter.Registry, sessionMgr *session.Manager, host string, p
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", host, port),
-		Handler:      corsMiddleware(logMiddleware(mux)),
+		Handler:      CORSMiddleware(LogMiddleware(mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 10 * time.Minute, // Long timeout for streaming
 		IdleTimeout:  60 * time.Second,
@@ -330,7 +330,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // --- Middleware ---
 
-func corsMiddleware(next http.Handler) http.Handler {
+// CORSMiddleware adds CORS headers.
+func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
@@ -345,10 +346,159 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func logMiddleware(next http.Handler) http.Handler {
+// LogMiddleware logs requests.
+func LogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+// --- Exported handler factories for reuse by coordinator ---
+
+// HandleListToolsFunc returns the tools list handler.
+func HandleListToolsFunc(registry *adapter.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		tools := make([]toolInfo, 0)
+		for _, name := range registry.List() {
+			a, _ := registry.Get(name)
+			tools = append(tools, toolInfo{
+				Name:      name,
+				Available: a.Available(),
+			})
+		}
+		writeJSON(w, http.StatusOK, tools)
+	}
+}
+
+// HandleRunFunc returns the synchronous run handler.
+func HandleRunFunc(sessionMgr *session.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req runRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		defer r.Body.Close()
+		if req.Tool == "" || req.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "tool and prompt are required")
+			return
+		}
+		sess, err := sessionMgr.Create(req.Tool, req.Prompt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ctx := r.Context()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				sessionMgr.Cancel(sess.ID)
+				writeError(w, http.StatusGatewayTimeout, "request cancelled")
+				return
+			case <-ticker.C:
+				current, _ := sessionMgr.Get(sess.ID)
+				if current.Status == "done" || current.Status == "error" || current.Status == "cancelled" {
+					writeJSON(w, http.StatusOK, runResponse{
+						SessionID: current.ID,
+						Tool:      current.Tool,
+						Output:    current.Output,
+						Error:     current.Error,
+					})
+					return
+				}
+			}
+		}
+	}
+}
+
+// HandleStreamFunc returns the SSE streaming handler.
+func HandleStreamFunc(sessionMgr *session.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req runRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		defer r.Body.Close()
+		if req.Tool == "" || req.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "tool and prompt are required")
+			return
+		}
+		sessionID, ch, err := sessionMgr.Stream(req.Tool, req.Prompt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Session-ID", sessionID)
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "streaming not supported")
+			return
+		}
+		fmt.Fprintf(w, "event: session\ndata: %s\n\n", sessionID)
+		flusher.Flush()
+		ctx := r.Context()
+		for {
+			select {
+			case <-ctx.Done():
+				sessionMgr.Cancel(sessionID)
+				return
+			case chunk, ok := <-ch:
+				if !ok {
+					fmt.Fprintf(w, "event: done\ndata: complete\n\n")
+					flusher.Flush()
+					return
+				}
+				if chunk.Error != "" {
+					data, _ := json.Marshal(map[string]string{"error": chunk.Error})
+					fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+					flusher.Flush()
+					if chunk.Done {
+						return
+					}
+					continue
+				}
+				if chunk.Done {
+					fmt.Fprintf(w, "event: done\ndata: complete\n\n")
+					flusher.Flush()
+					return
+				}
+				data, _ := json.Marshal(map[string]string{"text": chunk.Text})
+				fmt.Fprintf(w, "event: token\ndata: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+// HandleSessionsFunc returns the sessions list handler.
+func HandleSessionsFunc(sessionMgr *session.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		sessions := sessionMgr.List()
+		writeJSON(w, http.StatusOK, sessions)
+	}
 }

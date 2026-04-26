@@ -35,9 +35,11 @@ type ToolConfig struct {
 
 // Config is the top-level configuration.
 type Config struct {
-	Host  string       `json:"host"`
-	Port  int          `json:"port"`
-	Tools []ToolConfig `json:"tools"`
+	Host      string       `json:"host"`
+	Port      int          `json:"port"`
+	Tools     []ToolConfig `json:"tools"`
+	Network   string       `json:"network,omitempty"`
+	ShimImage string       `json:"shim_image,omitempty"`
 }
 
 func DefaultConfigPath() string {

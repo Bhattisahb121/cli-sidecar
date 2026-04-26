@@ -4,16 +4,49 @@ CLI 기반 AI 코딩 어시스턴트(Claude CLI, Codex CLI, Gemini CLI 등)를 �
 
 웹 요청을 받아서 CLI 도구에 텍스트를 입력하고, 결과를 다시 웹 응답으로 돌려줍니다.
 
-## 동작 방식
+## 아키텍처
+
+두 가지 실행 모드를 지원합니다:
+
+### Standalone 모드 (기본)
 
 ```
 웹 클라이언트 → HTTP 요청 → cli-sidecar → CLI 도구 실행 → 응답 캡처 → HTTP 응답
 ```
 
-- 각 CLI 도구를 subprocess 또는 PTY로 실행하여 stdin/stdout을 제어
-- 동기 실행(`/api/run`)과 SSE 스트리밍(`/api/stream`) 모두 지원
-- 여러 세션을 동시에 관리 가능
-- **ANSI → Markdown 역변환**: PTY에서 캡처한 ANSI 출력을 Markdown으로 자동 변환
+CLI 도구를 직접 subprocess로 실행합니다. Docker 없이 간단하게 사용할 때.
+
+### Coordinator 모드 (Docker 컨테이너 기반)
+
+```
+웹 클라이언트
+    │
+    ▼
+Coordinator (메인 프로세스, :8830)
+    ├── 라우팅: tool + account 기반
+    │
+    ├── 컨테이너: claude-user1-001 (Alpine)
+    │     └── Shim (:8831) ←→ Claude CLI (상주, PTY)
+    │
+    ├── 컨테이너: claude-user2-002 (Alpine)
+    │     └── Shim (:8831) ←→ Claude CLI (다른 계정)
+    │
+    ├── 컨테이너: codex-team1-003 (Alpine)
+    │     └── Shim (:8831) ←→ Codex CLI (상주, PTY)
+    │
+    └── ... (같은 Docker 네트워크: cli-sidecar-net)
+```
+
+- **Coordinator**: 웹 요청을 받아 적절한 컨테이너의 Shim으로 라우팅
+- **Shim**: 각 컨테이너 안에서 CLI 도구를 PTY로 띄워놓고 지속적으로 요청 대행
+- **컨테이너 네이밍**: `{tool}-{account}-{seq}` (예: `claude-user1-001`)
+- **네트워크**: 모든 컨테이너가 같은 Docker 네트워크에 연결
+- CLI를 매번 재실행하지 않고 상주시켜 부하 최소화
+
+**핵심 기능:**
+- 여러 LLM을 동시 실행 + 개별 LLM이 다른 계정 사용 가능
+- ANSI → Markdown 역변환 (PTY 출력을 깔끔한 텍스트로 변환)
+- 동기 실행과 SSE 스트리밍 모두 지원
 
 ## 설치
 
@@ -26,10 +59,12 @@ go install github.com/Bhattisahb121/cli-sidecar/cmd/cli-sidecar@latest
 ```bash
 git clone https://github.com/Bhattisahb121/cli-sidecar.git
 cd cli-sidecar
-make build
+make build-all
 ```
 
 ## 빠른 시작
+
+### Standalone 모드
 
 ```bash
 # 설정 파일 생성
@@ -42,6 +77,42 @@ cli-sidecar
 curl -X POST http://localhost:8830/api/run \
   -H "Content-Type: application/json" \
   -d '{"tool": "claude", "prompt": "explain goroutines in Go"}'
+```
+
+### Coordinator 모드 (Docker)
+
+```bash
+# Shim 이미지 빌드
+make docker-shim
+
+# Coordinator 시작
+cli-sidecar coordinator
+
+# Claude 컨테이너 생성 (user1 계정)
+curl -X POST http://localhost:8830/api/containers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "claude",
+    "account": "user1",
+    "cli_command": "claude",
+    "cli_args": "-i",
+    "output_mode": "markdown"
+  }'
+
+# Codex 컨테이너 생성 (다른 계정)
+curl -X POST http://localhost:8830/api/containers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "codex",
+    "account": "team1",
+    "cli_command": "codex",
+    "output_mode": "plain"
+  }'
+
+# 프롬프트 전송 (자동으로 해당 컨테이너의 Shim으로 라우팅)
+curl -X POST http://localhost:8830/api/prompt \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "claude", "account": "user1", "prompt": "explain goroutines"}'
 ```
 
 ## API
@@ -114,6 +185,47 @@ data: complete
 ### `DELETE /api/sessions/:id`
 세션 삭제
 
+### Coordinator API (coordinator 모드 전용)
+
+#### `POST /api/containers`
+새 컨테이너 생성
+
+```json
+{
+  "tool": "claude",
+  "account": "user1",
+  "cli_command": "claude",
+  "cli_args": "-i",
+  "output_mode": "markdown",
+  "env": {"ANTHROPIC_API_KEY": "sk-..."}
+}
+```
+
+#### `POST /api/prompt`
+컨테이너의 Shim에 프롬프트 전송 (tool + account로 자동 라우팅)
+
+```json
+{"tool": "claude", "account": "user1", "prompt": "explain goroutines"}
+```
+
+#### `GET /api/containers`
+모든 컨테이너 목록
+
+#### `GET /api/containers/:name`
+컨테이너 정보 조회
+
+#### `GET /api/containers/:name/health`
+Shim 헬스 체크
+
+#### `GET /api/containers/:name/logs`
+컨테이너 로그 조회
+
+#### `POST /api/containers/:name/stop`
+컨테이너 중지
+
+#### `DELETE /api/containers/:name`
+컨테이너 제거
+
 ## 설정
 
 설정 파일: `~/.config/cli-sidecar/config.json`
@@ -145,9 +257,13 @@ data: complete
       "enabled": true,
       "output_mode": "dumb"
     }
-  ]
+  ],
+  "network": "cli-sidecar-net",
+  "shim_image": "cli-sidecar-shim:latest"
 }
 ```
+
+`network`와 `shim_image`는 coordinator 모드에서만 사용됩니다.
 
 ### 출력 모드 (Output Mode)
 
@@ -203,7 +319,8 @@ PTY 모드에서는 `output_mode: "markdown"`과 함께 사용하면 ANSI 출력
 ## 요구 사항
 
 - Go 1.23+
-- 사용하려는 CLI 도구가 PATH에 설치되어 있어야 함
+- **Standalone 모드**: CLI 도구가 PATH에 설치되어 있어야 함
+- **Coordinator 모드**: Docker 필요, CLI 도구는 컨테이너 이미지에 포함
 
 ## 라이선스
 

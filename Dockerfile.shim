@@ -1,0 +1,19 @@
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /app
+COPY go.mod ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /shim ./cmd/shim/
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates curl bash
+
+COPY --from=builder /shim /usr/local/bin/shim
+
+# Default shim port
+ENV SHIM_PORT=8831
+EXPOSE 8831
+
+ENTRYPOINT ["/usr/local/bin/shim"]
