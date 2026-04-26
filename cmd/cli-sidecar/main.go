@@ -128,18 +128,14 @@ func runCoordinator() {
 	if len(cfg.Tools) > 0 {
 		registry := adapter.NewRegistry(cfg.Tools)
 		sessionMgr := session.NewManager(registry)
-		mux.HandleFunc("/api/tools", func(w http.ResponseWriter, r *http.Request) {
-			server.HandleListToolsFunc(registry)(w, r)
-		})
-		mux.HandleFunc("/api/run", func(w http.ResponseWriter, r *http.Request) {
-			server.HandleRunFunc(sessionMgr)(w, r)
-		})
-		mux.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
-			server.HandleStreamFunc(sessionMgr)(w, r)
-		})
-		mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
-			server.HandleSessionsFunc(sessionMgr)(w, r)
-		})
+		toolsHandler := server.HandleListToolsFunc(registry)
+		runHandler := server.HandleRunFunc(sessionMgr)
+		streamHandler := server.HandleStreamFunc(sessionMgr)
+		sessionsHandler := server.HandleSessionsFunc(sessionMgr)
+		mux.HandleFunc("/api/tools", toolsHandler)
+		mux.HandleFunc("/api/run", runHandler)
+		mux.HandleFunc("/api/stream", streamHandler)
+		mux.HandleFunc("/api/sessions", sessionsHandler)
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

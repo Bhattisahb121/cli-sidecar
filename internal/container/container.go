@@ -178,15 +178,18 @@ func (m *Manager) Stop(name string) error {
 }
 
 // Remove stops and removes a container.
+// Always cleans up the map entry even if docker rm fails (e.g., container never created).
 func (m *Manager) Remove(name string) error {
 	cmd := exec.Command("docker", "rm", "-f", name)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to remove container: %w", err)
-	}
+	dockerErr := cmd.Run()
 
 	m.mu.Lock()
 	delete(m.containers, name)
 	m.mu.Unlock()
+
+	if dockerErr != nil {
+		log.Printf("Warning: docker rm -f %s failed: %s (entry removed from manager)", name, dockerErr)
+	}
 
 	log.Printf("Container removed: %s", name)
 	return nil
