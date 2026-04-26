@@ -39,19 +39,21 @@ type Config struct {
 
 // Manager manages Docker containers for CLI tools.
 type Manager struct {
-	mu         sync.RWMutex
-	containers map[string]*Info
-	network    string
-	seqCounter int
-	shimImage  string
+	mu              sync.RWMutex
+	containers      map[string]*Info
+	network         string
+	seqCounter      int
+	shimImage       string
+	hostPortCounter int // next host port to allocate for shim port mapping
 }
 
 // NewManager creates a new container manager.
 func NewManager(network, shimImage string) *Manager {
 	return &Manager{
-		containers: make(map[string]*Info),
-		network:    network,
-		shimImage:  shimImage,
+		containers:      make(map[string]*Info),
+		network:         network,
+		shimImage:       shimImage,
+		hostPortCounter: 18831, // host ports start at 18831
 	}
 }
 
@@ -79,19 +81,18 @@ func (m *Manager) Create(cfg Config) (*Info, error) {
 	m.mu.Lock()
 	m.seqCounter++
 	seq := m.seqCounter
+	hostPort := m.hostPortCounter
+	m.hostPortCounter++
 	m.mu.Unlock()
 
 	name := fmt.Sprintf("%s-%s-%03d", cfg.Tool, cfg.Account, seq)
-
-	// Shim always listens on port 8831 inside the container
-	shimPort := 8831
 
 	info := &Info{
 		Name:      name,
 		Tool:      cfg.Tool,
 		Account:   cfg.Account,
 		Seq:       seq,
-		ShimPort:  shimPort,
+		ShimPort:  hostPort,
 		Status:    "creating",
 		CreatedAt: time.Now(),
 	}
@@ -110,6 +111,7 @@ func (m *Manager) Create(cfg Config) (*Info, error) {
 		"run", "-d",
 		"--name", name,
 		"--network", m.network,
+		"-p", fmt.Sprintf("%d:8831", hostPort),
 		"-e", fmt.Sprintf("CLI_COMMAND=%s", cfg.CLICommand),
 		"-e", fmt.Sprintf("SHIM_PORT=%d", 8831),
 		"-e", fmt.Sprintf("OUTPUT_MODE=%s", cfg.OutputMode),
@@ -147,8 +149,8 @@ func (m *Manager) Create(cfg Config) (*Info, error) {
 		info.ID = containerID
 	}
 	info.Status = "running"
-	// In Docker network, containers can reach each other by name
-	info.ShimAddr = fmt.Sprintf("http://%s:%d", name, 8831)
+	// Use host-mapped port so coordinator on host can reach the shim
+	info.ShimAddr = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 	m.mu.Unlock()
 
 	log.Printf("Container started: %s (ID: %s, shim: %s)", name, info.ID, info.ShimAddr)
