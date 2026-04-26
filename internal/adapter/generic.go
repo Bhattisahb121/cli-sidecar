@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 
+	"github.com/Bhattisahb121/cli-sidecar/internal/ansi"
 	"github.com/Bhattisahb121/cli-sidecar/internal/config"
 )
 
@@ -39,16 +41,42 @@ func (a *GenericAdapter) buildCmd(ctx context.Context, prompt string) *exec.Cmd 
 
 	cmd := exec.CommandContext(ctx, a.cfg.Command, args...)
 
-	// Inherit environment and add custom env vars
 	cmd.Env = os.Environ()
 	for k, v := range a.cfg.Env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
+	// In "dumb" mode, set TERM=dumb to suppress ANSI output
+	if a.cfg.OutputMode == config.OutputDumb {
+		cmd.Env = append(cmd.Env, "TERM=dumb")
+		cmd.Env = append(cmd.Env, "NO_COLOR=1")
+	}
+
 	return cmd
 }
 
+// processOutput applies the configured output mode to raw CLI output.
+func (a *GenericAdapter) processOutput(raw string) string {
+	switch a.cfg.OutputMode {
+	case config.OutputPlain:
+		return ansi.ToPlainText(raw)
+	case config.OutputMarkdown:
+		return ansi.ToMarkdown(raw)
+	case config.OutputDumb, config.OutputRaw, "":
+		return raw
+	default:
+		return raw
+	}
+}
+
 func (a *GenericAdapter) Execute(ctx context.Context, prompt string) (*Response, error) {
+	if a.cfg.UsePTY {
+		return a.executePTY(ctx, prompt)
+	}
+	return a.executePipe(ctx, prompt)
+}
+
+func (a *GenericAdapter) executePipe(ctx context.Context, prompt string) (*Response, error) {
 	cmd := a.buildCmd(ctx, prompt)
 
 	var stdout, stderr bytes.Buffer
@@ -57,23 +85,70 @@ func (a *GenericAdapter) Execute(ctx context.Context, prompt string) (*Response,
 
 	err := cmd.Run()
 	if err != nil {
-		// Include stderr in error for debugging
 		errMsg := err.Error()
 		if stderr.Len() > 0 {
 			errMsg = fmt.Sprintf("%s: %s", errMsg, strings.TrimSpace(stderr.String()))
 		}
 		return &Response{
-			Output: stdout.String(),
+			Output: a.processOutput(stdout.String()),
 			Error:  errMsg,
 		}, nil
 	}
 
 	return &Response{
-		Output: strings.TrimSpace(stdout.String()),
+		Output: strings.TrimSpace(a.processOutput(stdout.String())),
 	}, nil
 }
 
+func (a *GenericAdapter) executePTY(ctx context.Context, prompt string) (*Response, error) {
+	cmd := a.buildCmd(ctx, prompt)
+
+	ptmx, err := startPTY(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start PTY: %w", err)
+	}
+	defer ptmx.Close()
+
+	var output bytes.Buffer
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := io.Copy(&output, ptmx)
+		_ = err // PTY read returns error on process exit, which is normal
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		<-done // Wait for goroutine to finish writing before reading buffer
+		return &Response{
+			Output: a.processOutput(output.String()),
+			Error:  "cancelled",
+		}, nil
+	case err := <-done:
+		if err != nil {
+			return &Response{
+				Output: a.processOutput(output.String()),
+				Error:  err.Error(),
+			}, nil
+		}
+		return &Response{
+			Output: strings.TrimSpace(a.processOutput(output.String())),
+		}, nil
+	}
+}
+
 func (a *GenericAdapter) Stream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	if a.cfg.UsePTY {
+		return a.streamPTY(ctx, prompt)
+	}
+	return a.streamPipe(ctx, prompt)
+}
+
+func (a *GenericAdapter) streamPipe(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	cmd := a.buildCmd(ctx, prompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -95,7 +170,6 @@ func (a *GenericAdapter) Stream(ctx context.Context, prompt string) (<-chan Stre
 	go func() {
 		defer close(ch)
 
-		// Read stderr in background for error reporting
 		var stderrBuf bytes.Buffer
 		go func() {
 			scanner := bufio.NewScanner(stderrPipe)
@@ -104,7 +178,6 @@ func (a *GenericAdapter) Stream(ctx context.Context, prompt string) (<-chan Stre
 			}
 		}()
 
-		// Stream stdout line by line
 		scanner := bufio.NewScanner(stdoutPipe)
 		scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
@@ -117,7 +190,8 @@ func (a *GenericAdapter) Stream(ctx context.Context, prompt string) (<-chan Stre
 				ch <- StreamChunk{Error: "cancelled", Done: true}
 				return
 			default:
-				ch <- StreamChunk{Text: scanner.Text() + "\n"}
+				text := a.processOutput(scanner.Text() + "\n")
+				ch <- StreamChunk{Text: text}
 			}
 		}
 
@@ -132,6 +206,68 @@ func (a *GenericAdapter) Stream(ctx context.Context, prompt string) (<-chan Stre
 		}
 
 		ch <- StreamChunk{Done: true}
+	}()
+
+	return ch, nil
+}
+
+func (a *GenericAdapter) streamPTY(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	cmd := a.buildCmd(ctx, prompt)
+
+	ptmx, err := startPTY(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start PTY: %w", err)
+	}
+
+	ch := make(chan StreamChunk, 64)
+
+	go func() {
+		defer close(ch)
+		defer ptmx.Close()
+
+		// Collect all raw output, then process at the end to avoid
+		// splitting ANSI escape sequences across chunk boundaries.
+		var rawBuf strings.Builder
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-ctx.Done():
+				if cmd.Process != nil {
+					cmd.Process.Kill()
+				}
+				if rawBuf.Len() > 0 {
+					ch <- StreamChunk{Text: a.processOutput(rawBuf.String())}
+				}
+				ch <- StreamChunk{Error: "cancelled", Done: true}
+				return
+			default:
+				n, err := ptmx.Read(buf)
+				if n > 0 {
+					chunk := string(buf[:n])
+					rawBuf.WriteString(chunk)
+					// Stream raw chunks immediately for responsiveness
+					ch <- StreamChunk{Text: chunk}
+				}
+				if err != nil {
+					_ = cmd.Wait()
+					// Check if this was a context cancellation
+					if ctx.Err() != nil {
+						if rawBuf.Len() > 0 {
+							ch <- StreamChunk{Text: a.processOutput(rawBuf.String())}
+						}
+						ch <- StreamChunk{Error: "cancelled", Done: true}
+						return
+					}
+					// Normal process exit — send final processed output.
+					if rawBuf.Len() > 0 {
+						processed := a.processOutput(rawBuf.String())
+						ch <- StreamChunk{Text: processed, Final: true}
+					}
+					ch <- StreamChunk{Done: true}
+					return
+				}
+			}
+		}
 	}()
 
 	return ch, nil

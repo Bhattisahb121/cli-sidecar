@@ -17,6 +17,7 @@ type Response struct {
 type StreamChunk struct {
 	Text  string `json:"text"`
 	Done  bool   `json:"done"`
+	Final bool   `json:"final,omitempty"` // true when this chunk contains the fully processed output
 	Error string `json:"error,omitempty"`
 }
 

@@ -7,20 +7,39 @@ import (
 	"path/filepath"
 )
 
+// OutputMode controls how CLI tool output is processed.
+//
+//   - "raw": return output as-is (may contain ANSI codes)
+//   - "plain": strip all ANSI codes, return plain text
+//   - "markdown": convert ANSI-styled output back to Markdown
+//   - "dumb": set TERM=dumb to prevent ANSI output from the CLI tool
+type OutputMode string
+
+const (
+	OutputRaw      OutputMode = "raw"
+	OutputPlain    OutputMode = "plain"
+	OutputMarkdown OutputMode = "markdown"
+	OutputDumb     OutputMode = "dumb"
+)
+
 // ToolConfig holds settings for a single CLI tool.
 type ToolConfig struct {
-	Name    string            `json:"name"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env,omitempty"`
-	Enabled bool              `json:"enabled"`
+	Name       string            `json:"name"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args"`
+	Env        map[string]string `json:"env,omitempty"`
+	Enabled    bool              `json:"enabled"`
+	UsePTY     bool              `json:"use_pty,omitempty"`
+	OutputMode OutputMode        `json:"output_mode,omitempty"`
 }
 
 // Config is the top-level configuration.
 type Config struct {
-	Host  string       `json:"host"`
-	Port  int          `json:"port"`
-	Tools []ToolConfig `json:"tools"`
+	Host      string       `json:"host"`
+	Port      int          `json:"port"`
+	Tools     []ToolConfig `json:"tools"`
+	Network   string       `json:"network,omitempty"`
+	ShimImage string       `json:"shim_image,omitempty"`
 }
 
 func DefaultConfigPath() string {
