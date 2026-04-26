@@ -71,8 +71,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // --- Request/Response types ---
 
 type runRequest struct {
-	Tool   string `json:"tool"`
-	Prompt string `json:"prompt"`
+	Tool       string `json:"tool"`
+	Prompt     string `json:"prompt"`
+	OutputMode string `json:"output_mode,omitempty"` // override: "raw", "plain", "markdown", "dumb"
 }
 
 type runResponse struct {
@@ -87,8 +88,10 @@ type errorResponse struct {
 }
 
 type toolInfo struct {
-	Name      string `json:"name"`
-	Available bool   `json:"available"`
+	Name       string `json:"name"`
+	Available  bool   `json:"available"`
+	OutputMode string `json:"output_mode,omitempty"`
+	UsePTY     bool   `json:"use_pty,omitempty"`
 }
 
 // --- Handlers ---

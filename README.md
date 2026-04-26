@@ -10,9 +10,10 @@ CLI 기반 AI 코딩 어시스턴트(Claude CLI, Codex CLI, Gemini CLI 등)를 �
 웹 클라이언트 → HTTP 요청 → cli-sidecar → CLI 도구 실행 → 응답 캡처 → HTTP 응답
 ```
 
-- 각 CLI 도구를 subprocess로 실행하여 stdin/stdout을 제어
+- 각 CLI 도구를 subprocess 또는 PTY로 실행하여 stdin/stdout을 제어
 - 동기 실행(`/api/run`)과 SSE 스트리밍(`/api/stream`) 모두 지원
 - 여러 세션을 동시에 관리 가능
+- **ANSI → Markdown 역변환**: PTY에서 캡처한 ANSI 출력을 Markdown으로 자동 변환
 
 ## 설치
 
@@ -126,23 +127,44 @@ data: complete
       "name": "claude",
       "command": "claude",
       "args": ["-p"],
-      "enabled": true
+      "enabled": true,
+      "use_pty": true,
+      "output_mode": "markdown"
     },
     {
       "name": "codex",
       "command": "codex",
       "args": ["exec"],
-      "enabled": true
+      "enabled": true,
+      "output_mode": "plain"
     },
     {
       "name": "gemini",
       "command": "gemini",
       "args": ["-p"],
-      "enabled": true
+      "enabled": true,
+      "output_mode": "dumb"
     }
   ]
 }
 ```
+
+### 출력 모드 (Output Mode)
+
+CLI 도구의 출력을 처리하는 4가지 모드:
+
+| 모드 | 설명 | 용도 |
+|------|------|------|
+| `raw` | 출력을 그대로 반환 (ANSI 코드 포함) | 터미널 클라이언트가 직접 렌더링할 때 |
+| `plain` | ANSI 코드를 모두 제거, 순수 텍스트 반환 | 단순 텍스트만 필요할 때 |
+| `markdown` | ANSI 스타일을 Markdown으로 역변환 | **CLI 도구의 ANSI 출력을 Markdown으로 복원할 때** |
+| `dumb` | `TERM=dumb` + `NO_COLOR=1` 설정하여 CLI가 ANSI 없이 출력 | CLI가 plain text 모드를 지원할 때 |
+
+### PTY 모드
+
+`"use_pty": true`를 설정하면 CLI 도구를 PTY(의사 터미널)에서 실행합니다.
+일부 도구는 PTY가 있어야 정상 동작하거나 색상 출력을 생성합니다.
+PTY 모드에서는 `output_mode: "markdown"`과 함께 사용하면 ANSI 출력이 자동으로 Markdown으로 변환됩니다.
 
 ### 커스텀 도구 추가
 
@@ -156,7 +178,9 @@ data: complete
   "env": {
     "MY_AI_KEY": "..."
   },
-  "enabled": true
+  "enabled": true,
+  "use_pty": false,
+  "output_mode": "plain"
 }
 ```
 
