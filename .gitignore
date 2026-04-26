@@ -1,0 +1,21 @@
+# Binary
+/cli-sidecar
+/cli-sidecar.exe
+
+# Build
+dist/
+bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (may contain paths)
+config.json
