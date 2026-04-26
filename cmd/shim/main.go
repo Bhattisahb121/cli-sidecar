@@ -348,7 +348,6 @@ func (p *CLIProcess) handleHealth(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 
 	if !ready {
-		w.WriteHeader(http.StatusServiceUnavailable)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "initializing"})
 		return
 	}
