@@ -127,6 +127,10 @@ func (p *CLIProcess) Start(command, args string) error {
 	go func() {
 		time.Sleep(2 * time.Second)
 		p.mu.Lock()
+		if p.ptmx == nil || p.cmd == nil || p.cmd.Process == nil {
+			p.mu.Unlock()
+			return
+		}
 		p.drainOutput(3 * time.Second)
 		p.ready = true
 		p.mu.Unlock()

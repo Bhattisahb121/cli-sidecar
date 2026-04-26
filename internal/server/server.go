@@ -484,7 +484,11 @@ func HandleStreamFunc(sessionMgr *session.Manager) http.HandlerFunc {
 					return
 				}
 				data, _ := json.Marshal(map[string]string{"text": chunk.Text})
-				fmt.Fprintf(w, "event: token\ndata: %s\n\n", data)
+				if chunk.Final {
+					fmt.Fprintf(w, "event: final\ndata: %s\n\n", data)
+				} else {
+					fmt.Fprintf(w, "event: token\ndata: %s\n\n", data)
+				}
 				flusher.Flush()
 			}
 		}
